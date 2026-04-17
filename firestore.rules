@@ -1,0 +1,38 @@
+// firestore.rules
+// Paste these into Firebase Console → Firestore Database → Rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── status/latest  (frontend reads live; only backend writes) ────────────
+    match /status/latest {
+      allow read: if true;
+      allow write: if false;   // only the backend service account can write
+    }
+
+    // ── predictions  (frontend reads for charts; only backend writes) ─────────
+    match /predictions/{doc} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // ── fault_log  (frontend reads; only backend writes) ─────────────────────
+    match /fault_log/{doc} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // ── anomaly_labels  (only backend reads/writes) ───────────────────────────
+    match /anomaly_labels/{doc} {
+      allow read: if false;
+      allow write: if false;
+    }
+
+    // ── ml_models  (only backend reads/writes) ────────────────────────────────
+    match /ml_models/{doc} {
+      allow read: if false;
+      allow write: if false;
+    }
+  }
+}
