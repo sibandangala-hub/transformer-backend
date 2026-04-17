@@ -6,8 +6,10 @@ from datetime import datetime, timezone
 
 app = Flask(__name__)
 
-# ── Firestore init ──────────────────────────────────────────────
-cred = credentials.Certificate("firebase_credentials.json")
+# ── Firestore init ─────────────────────────────────────────────
+
+cred_path = os.path.join(os.path.dirname(__file__), "firebase_credentials.json")
+cred = credentials.Certificate(cred_path)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
