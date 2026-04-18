@@ -1,7 +1,42 @@
 {
-  "winding_temp": { "mean": 0, "std": 1 },
-  "current":      { "mean": 0, "std": 1 },
-  "vibration":    { "mean": 0, "std": 1 },
-  "oil_level":    { "mean": 0, "std": 1 },
-  "_note": "Populated automatically after train_phase1.py runs"
+  "winding_temp": {
+    "mean": 36.507706422018344,
+    "std": 4.483302210986363
+  },
+  "current": {
+    "mean": 1.4631103740061164,
+    "std": 0.357024959731717
+  },
+  "vibration": {
+    "mean": 0.4659737162079511,
+    "std": 2.5669393947922083
+  },
+  "oil_level": {
+    "mean": 77.19464993272172,
+    "std": 8.407344018172784
+  },
+  "temp_rolling_mean_10": {
+    "mean": 36.49362169918936,
+    "std": 4.4893594734488556
+  },
+  "temp_rolling_std_10": {
+    "mean": 0.06330440103428975,
+    "std": 0.18222248738865252
+  },
+  "current_rolling_mean_10": {
+    "mean": 1.4642288855590746,
+    "std": 0.34285241217232876
+  },
+  "vibration_rolling_max_10": {
+    "mean": 0.8851513813455657,
+    "std": 6.9561967984397315
+  },
+  "temp_rate_of_change": {
+    "mean": 0.0031345565749235473,
+    "std": 0.20501015921355384
+  },
+  "current_rate_of_change": {
+    "mean": -0.0006323428134556578,
+    "std": 0.09856918846268166
+  }
 }
