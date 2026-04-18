@@ -1,0 +1,7 @@
+{
+  "winding_temp": { "mean": 0, "std": 1 },
+  "current":      { "mean": 0, "std": 1 },
+  "vibration":    { "mean": 0, "std": 1 },
+  "oil_level":    { "mean": 0, "std": 1 },
+  "_note": "Populated automatically after train_phase1.py runs"
+}
