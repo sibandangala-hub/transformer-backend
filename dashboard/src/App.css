@@ -1,0 +1,524 @@
+import { useState, useEffect, useCallback } from 'react';
+import { db } from './services/firebase';
+import { fetchHealth, fetchAlerts, acknowledgeAlert } from './services/api';
+import {
+  collection, query, orderBy, limit,
+  onSnapshot, getCountFromServer
+} from 'firebase/firestore';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Legend
+} from 'recharts';
+import {
+  Thermometer, Zap, Activity, Droplets,
+  Wifi, WifiOff, Server, Cpu, Brain,
+  AlertTriangle, CheckCircle, Clock,
+  Database, RefreshCw, Bell, BellOff
+} from 'lucide-react';
+import { format, formatDistanceToNow } from 'date-fns';
+
+// ─── CONSTANTS ───────────────────────────────
+const CHART_WINDOW    = 50;   // last N readings shown on chart
+const REFRESH_INTERVAL = 30000; // health check every 30s
+
+// ─── STATUS BADGE ────────────────────────────
+function Badge({ color, children }) {
+  const colors = {
+    green:  'bg-green-100 text-green-800 border-green-300',
+    red:    'bg-red-100 text-red-800 border-red-300',
+    yellow: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+    gray:   'bg-gray-100 text-gray-600 border-gray-300',
+    blue:   'bg-blue-100 text-blue-800 border-blue-300'
+  };
+  return (
+    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${colors[color]}`}>
+      {children}
+    </span>
+  );
+}
+
+// ─── STAT CARD ───────────────────────────────
+function StatCard({ icon: Icon, label, value, unit, color, fault }) {
+  const colors = {
+    orange: 'text-orange-500', blue: 'text-blue-500',
+    purple: 'text-purple-500', teal: 'text-teal-500'
+  };
+  return (
+    <div className={`bg-white rounded-2xl p-5 shadow border ${fault ? 'border-red-400' : 'border-gray-100'}`}>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm text-gray-500 font-medium">{label}</span>
+        <Icon size={20} className={colors[color]} />
+      </div>
+      <div className="flex items-end gap-1">
+        <span className="text-3xl font-bold text-gray-800">
+          {value ?? '—'}
+        </span>
+        <span className="text-sm text-gray-400 mb-1">{unit}</span>
+      </div>
+      {fault && (
+        <p className="text-xs text-red-500 mt-1 font-semibold">⚠ Sensor Fault</p>
+      )}
+    </div>
+  );
+}
+
+// ─── STATUS ROW ──────────────────────────────
+function StatusRow({ icon: Icon, label, status, detail, color }) {
+  const iconColors = {
+    green: 'text-green-500', red: 'text-red-500',
+    yellow: 'text-yellow-500', gray: 'text-gray-400', blue: 'text-blue-500'
+  };
+  return (
+    <div className="flex items-center justify-between py-3 border-b border-gray-50 last:border-0">
+      <div className="flex items-center gap-3">
+        <Icon size={18} className={iconColors[color]} />
+        <span className="text-sm font-medium text-gray-700">{label}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        {detail && <span className="text-xs text-gray-400">{detail}</span>}
+        <Badge color={color}>{status}</Badge>
+      </div>
+    </div>
+  );
+}
+
+// ─── ALERT CARD ──────────────────────────────
+function AlertCard({ alert, onAck }) {
+  const severityColor = {
+    critical: 'border-red-500 bg-red-50',
+    medium:   'border-yellow-500 bg-yellow-50',
+    low:      'border-blue-500 bg-blue-50'
+  };
+  return (
+    <div className={`rounded-xl border-l-4 p-4 ${severityColor[alert.severity] || 'border-gray-300 bg-gray-50'}`}>
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-sm font-bold text-gray-800">{alert.label || alert.alert_type}</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Confidence: {alert.confidence ? `${(alert.confidence * 100).toFixed(1)}%` : 'N/A'}
+          </p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            {alert.timestamp?.toDate
+              ? formatDistanceToNow(alert.timestamp.toDate(), { addSuffix: true })
+              : '—'}
+          </p>
+        </div>
+        <button
+          onClick={() => onAck(alert.id)}
+          className="text-xs bg-white border border-gray-300 rounded-lg px-3 py-1 hover:bg-gray-50 font-medium"
+        >
+          Ack
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── MAIN APP ────────────────────────────────
+export default function App() {
+  const [readings, setReadings]         = useState([]);
+  const [latest, setLatest]             = useState(null);
+  const [totalCount, setTotalCount]     = useState(null);
+  const [alerts, setAlerts]             = useState([]);
+  const [renderStatus, setRenderStatus] = useState(null);
+  const [lastPost, setLastPost]         = useState(null);
+  const [activeModel, setActiveModel]   = useState(null);
+  const [fbConnected, setFbConnected]   = useState(false);
+  const [esp32Active, setEsp32Active]   = useState(false);
+  const [lastUpdated, setLastUpdated]   = useState(null);
+  const [tab, setTab]                   = useState('overview');
+
+  // ── Real-time readings from Firestore ──
+  useEffect(() => {
+    const q = query(
+      collection(db, 'readings'),
+      orderBy('created_at', 'desc'),
+      limit(CHART_WINDOW)
+    );
+
+    const unsub = onSnapshot(q, snap => {
+      setFbConnected(true);
+      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() })).reverse();
+      setReadings(docs);
+
+      if (docs.length > 0) {
+        const last = docs[docs.length - 1];
+        setLatest(last);
+        setLastUpdated(new Date());
+
+        // ESP32 active if last reading within 10 seconds
+        const ts = last.created_at?.toDate?.();
+        if (ts) setEsp32Active((Date.now() - ts.getTime()) < 10000);
+      }
+    }, () => setFbConnected(false));
+
+    return unsub;
+  }, []);
+
+  // ── Total reading count ──
+  useEffect(() => {
+    async function getCount() {
+      const snap = await getCountFromServer(collection(db, 'readings'));
+      setTotalCount(snap.data().count);
+    }
+    getCount();
+    const interval = setInterval(getCount, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── Render health + alerts ──
+  const refreshExternal = useCallback(async () => {
+    const [health, alertData] = await Promise.all([fetchHealth(), fetchAlerts()]);
+    setRenderStatus(health);
+    setAlerts(alertData?.alerts || []);
+  }, []);
+
+  useEffect(() => {
+    refreshExternal();
+    const interval = setInterval(refreshExternal, REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [refreshExternal]);
+
+  // ── Active model from Firestore ──
+  useEffect(() => {
+    const q = query(collection(db, 'models'), orderBy('trained_at', 'desc'), limit(1));
+    const unsub = onSnapshot(q, snap => {
+      if (!snap.empty) setActiveModel({ id: snap.docs[0].id, ...snap.docs[0].data() });
+      else setActiveModel(null);
+    });
+    return unsub;
+  }, []);
+
+  // ── Chart data ──
+  const chartData = readings.map(r => ({
+    time:        r.timestamp ? format(new Date(r.timestamp), 'HH:mm:ss') : '',
+    temp:        parseFloat(r.winding_temp?.toFixed(2)),
+    current:     parseFloat(r.current?.toFixed(3)),
+    vibration:   parseFloat(r.vibration?.toFixed(4)),
+    oil:         parseFloat(r.oil_level?.toFixed(1)),
+  }));
+
+  // ── Progress toward 50k training target ──
+  const progress = totalCount ? Math.min((totalCount / 50000) * 100, 100) : 0;
+
+  // ── ESP32 status ──
+  useEffect(() => {
+    if (!latest) return;
+    const ts = latest.created_at?.toDate?.();
+    if (!ts) return;
+    const interval = setInterval(() => {
+      setEsp32Active((Date.now() - ts.getTime()) < 10000);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [latest]);
+
+  const handleAck = async (id) => {
+    await acknowledgeAlert(id);
+    setAlerts(prev => prev.filter(a => a.id !== id));
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 font-sans">
+
+      {/* ── HEADER ── */}
+      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center">
+            <Zap size={20} className="text-white" />
+          </div>
+          <div>
+            <h1 className="text-base font-bold text-gray-900">Transformer PM</h1>
+            <p className="text-xs text-gray-400">Predictive Maintenance System</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {lastUpdated && (
+            <span className="text-xs text-gray-400">
+              Updated {formatDistanceToNow(lastUpdated, { addSuffix: true })}
+            </span>
+          )}
+          {alerts.length > 0 && (
+            <div className="relative">
+              <Bell size={20} className="text-red-500" />
+              <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
+                {alerts.length}
+              </span>
+            </div>
+          )}
+          <button onClick={refreshExternal} className="p-2 rounded-lg hover:bg-gray-100">
+            <RefreshCw size={16} className="text-gray-500" />
+          </button>
+        </div>
+      </header>
+
+      {/* ── TABS ── */}
+      <div className="bg-white border-b border-gray-200 px-6">
+        {['overview', 'charts', 'alerts', 'system'].map(t => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`mr-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+              tab === t
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {t.charAt(0).toUpperCase() + t.slice(1)}
+            {t === 'alerts' && alerts.length > 0 && (
+              <span className="ml-1 bg-red-500 text-white text-xs px-1.5 rounded-full">
+                {alerts.length}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
+
+        {/* ══════════════════════════════════════
+            TAB: OVERVIEW
+        ══════════════════════════════════════ */}
+        {tab === 'overview' && (
+          <>
+            {/* Live sensor readings */}
+            <div>
+              <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
+                Live Sensor Readings
+              </h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <StatCard icon={Thermometer} label="Winding Temp"
+                  value={latest?.winding_temp?.toFixed(1)} unit="°C"
+                  color="orange" fault={latest?.temp_fault} />
+                <StatCard icon={Zap} label="Current"
+                  value={latest?.current?.toFixed(3)} unit="A"
+                  color="blue" />
+                <StatCard icon={Activity} label="Vibration"
+                  value={latest?.vibration?.toFixed(4)} unit="m/s²"
+                  color="purple" />
+                <StatCard icon={Droplets} label="Oil Level"
+                  value={latest?.oil_level?.toFixed(1)} unit="%"
+                  color="teal" />
+              </div>
+            </div>
+
+            {/* Data collection progress */}
+            <div className="bg-white rounded-2xl p-5 shadow border border-gray-100">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-sm font-semibold text-gray-700">
+                    Data Collection Progress
+                  </h2>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Target: 50,000 readings for Phase 1 training
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-2xl font-bold text-blue-600">
+                    {totalCount?.toLocaleString() ?? '—'}
+                  </p>
+                  <p className="text-xs text-gray-400">readings collected</p>
+                </div>
+              </div>
+              <div className="w-full bg-gray-100 rounded-full h-3">
+                <div
+                  className="bg-blue-600 h-3 rounded-full transition-all duration-500"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <div className="flex justify-between mt-2">
+                <span className="text-xs text-gray-400">0</span>
+                <span className="text-xs font-medium text-blue-600">{progress.toFixed(1)}%</span>
+                <span className="text-xs text-gray-400">50,000</span>
+              </div>
+              {totalCount >= 50000 && (
+                <div className="mt-3 bg-green-50 border border-green-200 rounded-xl p-3">
+                  <p className="text-sm text-green-700 font-semibold">
+                    ✅ Ready for Phase 1 unsupervised training
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Mini chart preview */}
+            <div className="bg-white rounded-2xl p-5 shadow border border-gray-100">
+              <h2 className="text-sm font-semibold text-gray-700 mb-4">
+                Temperature — Last {CHART_WINDOW} Readings
+              </h2>
+              <ResponsiveContainer width="100%" height={180}>
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="time" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                  <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="temp" stroke="#f97316"
+                    dot={false} strokeWidth={2} name="Temp °C" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        )}
+
+        {/* ══════════════════════════════════════
+            TAB: CHARTS
+        ══════════════════════════════════════ */}
+        {tab === 'charts' && (
+          <div className="space-y-6">
+            {[
+              { key: 'temp',      label: 'Winding Temperature (°C)', color: '#f97316' },
+              { key: 'current',   label: 'Current (A)',               color: '#3b82f6' },
+              { key: 'vibration', label: 'Vibration (m/s²)',          color: '#8b5cf6' },
+              { key: 'oil',       label: 'Oil Level (%)',             color: '#14b8a6' },
+            ].map(({ key, label, color }) => (
+              <div key={key} className="bg-white rounded-2xl p-5 shadow border border-gray-100">
+                <h2 className="text-sm font-semibold text-gray-700 mb-4">{label}</h2>
+                <ResponsiveContainer width="100%" height={200}>
+                  <LineChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="time" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                    <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
+                    <Tooltip />
+                    <Line type="monotone" dataKey={key} stroke={color}
+                      dot={false} strokeWidth={2} name={label} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ══════════════════════════════════════
+            TAB: ALERTS
+        ══════════════════════════════════════ */}
+        {tab === 'alerts' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-700">
+                Active Alerts ({alerts.length})
+              </h2>
+              <button onClick={refreshExternal}
+                className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                <RefreshCw size={12} /> Refresh
+              </button>
+            </div>
+            {alerts.length === 0 ? (
+              <div className="bg-white rounded-2xl p-10 text-center shadow border border-gray-100">
+                <CheckCircle size={40} className="text-green-400 mx-auto mb-3" />
+                <p className="text-sm font-semibold text-gray-600">No active alerts</p>
+                <p className="text-xs text-gray-400 mt-1">
+                  Alerts will appear here after ML models are trained
+                </p>
+              </div>
+            ) : (
+              alerts.map(a => (
+                <AlertCard key={a.id} alert={a} onAck={handleAck} />
+              ))
+            )}
+          </div>
+        )}
+
+        {/* ══════════════════════════════════════
+            TAB: SYSTEM
+        ══════════════════════════════════════ */}
+        {tab === 'system' && (
+          <div className="space-y-4">
+
+            {/* System status */}
+            <div className="bg-white rounded-2xl p-5 shadow border border-gray-100">
+              <h2 className="text-sm font-semibold text-gray-700 mb-2">System Status</h2>
+              <StatusRow icon={fbConnected ? Wifi : WifiOff}
+                label="Firebase Connection"
+                status={fbConnected ? 'Connected' : 'Disconnected'}
+                color={fbConnected ? 'green' : 'red'} />
+              <StatusRow icon={Server}
+                label="Render Backend"
+                status={renderStatus ? 'Online' : 'Offline'}
+                detail={renderStatus ? `Uptime ${Math.floor(renderStatus.uptime)}s` : ''}
+                color={renderStatus ? 'green' : 'red'} />
+              <StatusRow icon={Cpu}
+                label="ESP32 Device"
+                status={esp32Active ? 'Transmitting' : 'Idle / Offline'}
+                detail={latest?.seq != null ? `Seq #${latest.seq}` : ''}
+                color={esp32Active ? 'green' : 'yellow'} />
+              <StatusRow icon={Database}
+                label="Data Collection"
+                status={totalCount >= 50000 ? 'Ready to Train' : 'Collecting'}
+                detail={`${totalCount?.toLocaleString() ?? '—'} readings`}
+                color={totalCount >= 50000 ? 'green' : 'blue'} />
+              <StatusRow icon={Brain}
+                label="ML Model"
+                status={activeModel ? `v${activeModel.version}` : 'Not trained yet'}
+                detail={activeModel ? `F1: ${activeModel.rf_f1?.toFixed(3)}` : 'Waiting for data'}
+                color={activeModel ? 'green' : 'gray'} />
+            </div>
+
+            {/* Last reading details */}
+            {latest && (
+              <div className="bg-white rounded-2xl p-5 shadow border border-gray-100">
+                <h2 className="text-sm font-semibold text-gray-700 mb-3">Last Reading Detail</h2>
+                <div className="space-y-2">
+                  {[
+                    ['Document ID',    latest.id],
+                    ['Timestamp',      latest.timestamp],
+                    ['Sequence',       latest.seq ?? 'N/A'],
+                    ['Uptime (ms)',    latest.uptime_ms?.toLocaleString() ?? 'N/A'],
+                    ['Temp Fault',     latest.temp_fault ? '⚠ YES' : 'No'],
+                    ['Label',          latest.label ?? 'Unlabeled'],
+                    ['Anomaly Score',  latest.anomaly_score ?? 'Not scored'],
+                    ['Predicted',      latest.predicted_label ?? 'Not predicted'],
+                    ['Confidence',     latest.confidence ? `${(latest.confidence*100).toFixed(1)}%` : '—'],
+                    ['Severity',       latest.severity ?? '—'],
+                  ].map(([k, v]) => (
+                    <div key={k} className="flex justify-between text-sm py-1 border-b border-gray-50 last:border-0">
+                      <span className="text-gray-500">{k}</span>
+                      <span className="font-medium text-gray-800 text-right max-w-xs truncate">{String(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Model details */}
+            <div className="bg-white rounded-2xl p-5 shadow border border-gray-100">
+              <h2 className="text-sm font-semibold text-gray-700 mb-3">Model Status</h2>
+              {activeModel ? (
+                <div className="space-y-2">
+                  {[
+                    ['Version',       activeModel.version],
+                    ['Type',          activeModel.type],
+                    ['RF F1 Score',   activeModel.rf_f1?.toFixed(4)],
+                    ['GB F1 Score',   activeModel.gb_f1?.toFixed(4)],
+                    ['Trained On',    `${activeModel.n_samples?.toLocaleString()} samples`],
+                    ['Trained At',    activeModel.trained_at?.toDate?.()?.toISOString?.() ?? '—'],
+                    ['Retrain Reason', activeModel.reason],
+                  ].map(([k, v]) => (
+                    <div key={k} className="flex justify-between text-sm py-1 border-b border-gray-50 last:border-0">
+                      <span className="text-gray-500">{k}</span>
+                      <span className="font-medium text-gray-800">{String(v ?? '—')}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <Brain size={36} className="text-gray-300 mx-auto mb-2" />
+                  <p className="text-sm text-gray-500">No model trained yet</p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Available after Phase 1 training at 50,000 readings
+                  </p>
+                </div>
+              )}
+            </div>
+
+          </div>
+        )}
+
+      </main>
+
+      {/* ── FOOTER ── */}
+      <footer className="text-center py-6 text-xs text-gray-400">
+        Transformer PM v1.0 — Data collecting since session start
+        {lastUpdated && ` — Last sync ${format(lastUpdated, 'HH:mm:ss')}`}
+      </footer>
+
+    </div>
+  );
+}

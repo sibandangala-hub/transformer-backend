@@ -35,6 +35,13 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
+// Keep Render free tier alive
+const https = require('https');
+setInterval(() => {
+  https.get('https://transformer-pm-api.onrender.com/health', (res) => {
+    console.log('[KEEPALIVE]', res.statusCode);
+  }).on('error', () => {});
+}, 9 * 60 * 1000); // every 9 minutes
 app.listen(PORT, () => {
   console.log(`[SERVER] Running on port ${PORT}`);
   console.log(`[SERVER] Environment: ${process.env.NODE_ENV}`);
