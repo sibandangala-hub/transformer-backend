@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { db } from './services/firebase';
-import { fetchHealth, fetchAlerts, acknowledgeAlert } from './services/api';
 import {
   collection, query, orderBy, limit,
   onSnapshot, getCountFromServer
@@ -11,49 +10,47 @@ import {
 } from 'recharts';
 import { format, formatDistanceToNow } from 'date-fns';
 
+const BASE_URL = 'https://transformer-pm-api.onrender.com';
+const API_KEY  = 'your_secret_key_123';
 const CHART_WINDOW     = 50;
 const REFRESH_INTERVAL = 30000;
 
 const S = {
-  app:        { minHeight:'100vh', background:'#f8fafc', fontFamily:'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif', color:'#1e293b' },
-  header:     { background:'#fff', borderBottom:'1px solid #e2e8f0', padding:'12px 24px', display:'flex', alignItems:'center', justifyContent:'space-between', position:'sticky', top:0, zIndex:10, boxShadow:'0 1px 4px rgba(0,0,0,0.06)' },
-  headerLeft: { display:'flex', alignItems:'center', gap:12 },
-  logo:       { width:38, height:38, background:'#2563eb', borderRadius:10, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontWeight:'bold', fontSize:18 },
-  headerTitle:{ margin:0, fontSize:15, fontWeight:700 },
-  headerSub:  { margin:0, fontSize:11, color:'#94a3b8' },
-  headerRight:{ display:'flex', alignItems:'center', gap:12 },
-  tabs:       { background:'#fff', borderBottom:'1px solid #e2e8f0', padding:'0 24px', display:'flex', gap:0 },
-  tab:        (active) => ({ padding:'12px 20px', fontSize:13, fontWeight:500, cursor:'pointer', border:'none', background:'none', borderBottom: active ? '2px solid #2563eb' : '2px solid transparent', color: active ? '#2563eb' : '#64748b' }),
-  main:       { maxWidth:1100, margin:'0 auto', padding:'24px', display:'flex', flexDirection:'column', gap:24 },
-  row:        { display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:16 },
-  row2:       { display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 },
-  card:       (fault) => ({ background:'#fff', borderRadius:16, padding:20, boxShadow:'0 1px 4px rgba(0,0,0,0.07)', border: fault ? '1.5px solid #ef4444' : '1px solid #e2e8f0' }),
-  cardLabel:  { fontSize:12, color:'#64748b', fontWeight:500, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center' },
-  cardValue:  { fontSize:32, fontWeight:700, color:'#1e293b' },
-  cardUnit:   { fontSize:13, color:'#94a3b8', marginLeft:4 },
-  fault:      { fontSize:11, color:'#ef4444', fontWeight:600, marginTop:4 },
-  badge:      (color) => {
-    const map = { green:['#dcfce7','#166534'], red:['#fee2e2','#991b1b'], yellow:['#fef9c3','#854d0e'], gray:['#f1f5f9','#475569'], blue:['#dbeafe','#1e40af'] };
-    const [bg, text] = map[color] || map.gray;
-    return { background:bg, color:text, fontSize:11, fontWeight:600, padding:'2px 10px', borderRadius:20 };
-  },
+  app:          { minHeight:'100vh', background:'#f8fafc', fontFamily:'-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif', color:'#1e293b' },
+  header:       { background:'#fff', borderBottom:'1px solid #e2e8f0', padding:'12px 24px', display:'flex', alignItems:'center', justifyContent:'space-between', position:'sticky', top:0, zIndex:10, boxShadow:'0 1px 4px rgba(0,0,0,0.06)' },
+  headerLeft:   { display:'flex', alignItems:'center', gap:12 },
+  logo:         { width:38, height:38, background:'#2563eb', borderRadius:10, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontWeight:'bold', fontSize:18 },
+  headerTitle:  { margin:0, fontSize:15, fontWeight:700 },
+  headerSub:    { margin:0, fontSize:11, color:'#94a3b8' },
+  headerRight:  { display:'flex', alignItems:'center', gap:10 },
+  tabs:         { background:'#fff', borderBottom:'1px solid #e2e8f0', padding:'0 24px', display:'flex' },
+  tab:          (a) => ({ padding:'12px 20px', fontSize:13, fontWeight:500, cursor:'pointer', border:'none', background:'none', borderBottom: a ? '2px solid #2563eb' : '2px solid transparent', color: a ? '#2563eb' : '#64748b' }),
+  main:         { maxWidth:1100, margin:'0 auto', padding:'24px', display:'flex', flexDirection:'column', gap:24 },
+  row4:         { display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:16 },
+  card:         (fault) => ({ background:'#fff', borderRadius:16, padding:20, boxShadow:'0 1px 4px rgba(0,0,0,0.07)', border: fault ? '1.5px solid #ef4444' : '1px solid #e2e8f0' }),
+  cardLabel:    { fontSize:12, color:'#64748b', fontWeight:500, marginBottom:8, display:'flex', justifyContent:'space-between' },
+  cardValue:    { fontSize:32, fontWeight:700, color:'#1e293b' },
+  cardUnit:     { fontSize:13, color:'#94a3b8', marginLeft:4 },
+  fault:        { fontSize:11, color:'#ef4444', fontWeight:600, marginTop:4 },
+  badge:        (c) => { const m={green:['#dcfce7','#166534'],red:['#fee2e2','#991b1b'],yellow:['#fef9c3','#854d0e'],gray:['#f1f5f9','#475569'],blue:['#dbeafe','#1e40af']}; const [bg,tc]=m[c]||m.gray; return {background:bg,color:tc,fontSize:11,fontWeight:600,padding:'2px 10px',borderRadius:20}; },
   progressWrap: { background:'#fff', borderRadius:16, padding:20, boxShadow:'0 1px 4px rgba(0,0,0,0.07)', border:'1px solid #e2e8f0' },
   progressBar:  { background:'#e2e8f0', borderRadius:99, height:12, overflow:'hidden', margin:'12px 0 4px' },
-  progressFill: (pct) => ({ height:'100%', width:`${pct}%`, background:'#2563eb', borderRadius:99, transition:'width 0.5s' }),
-  statusRow:  { display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 0', borderBottom:'1px solid #f1f5f9' },
-  statusLeft: { display:'flex', alignItems:'center', gap:10 },
-  dot:        (color) => { const map={green:'#22c55e',red:'#ef4444',yellow:'#eab308',gray:'#94a3b8',blue:'#3b82f6'}; return { width:10, height:10, borderRadius:'50%', background:map[color]||map.gray, flexShrink:0 }; },
-  detailRow:  { display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:'1px solid #f8fafc', fontSize:13 },
-  detailKey:  { color:'#64748b' },
-  detailVal:  { fontWeight:500, maxWidth:200, textAlign:'right', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' },
-  alertCard:  (s) => { const map={critical:'#ef4444',medium:'#eab308',low:'#3b82f6'}; return { background:'#fff', borderRadius:12, padding:16, borderLeft:`4px solid ${map[s]||'#94a3b8'}`, boxShadow:'0 1px 4px rgba(0,0,0,0.06)', marginBottom:12 }; },
-  ackBtn:     { fontSize:12, border:'1px solid #e2e8f0', borderRadius:8, padding:'4px 12px', cursor:'pointer', background:'#fff', fontWeight:500 },
-  empty:      { textAlign:'center', padding:'48px 0', color:'#94a3b8' },
-  sectionTitle: { fontSize:13, fontWeight:600, color:'#64748b', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:12 },
-  readyBanner: { background:'#dcfce7', border:'1px solid #86efac', borderRadius:12, padding:'12px 16px', color:'#166534', fontSize:13, fontWeight:600, marginTop:8 },
-  footer:     { textAlign:'center', padding:'24px', fontSize:12, color:'#94a3b8' },
-  refreshBtn: { background:'none', border:'1px solid #e2e8f0', borderRadius:8, padding:'6px 10px', cursor:'pointer', fontSize:12, color:'#64748b' },
-  noModel:    { textAlign:'center', padding:32, color:'#94a3b8', fontSize:13 }
+  progressFill: (p) => ({ height:'100%', width:`${p}%`, background:'#2563eb', borderRadius:99, transition:'width 0.5s' }),
+  statusRow:    { display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 0', borderBottom:'1px solid #f1f5f9' },
+  statusLeft:   { display:'flex', alignItems:'center', gap:10 },
+  dot:          (c) => { const m={green:'#22c55e',red:'#ef4444',yellow:'#eab308',gray:'#94a3b8',blue:'#3b82f6'}; return {width:10,height:10,borderRadius:'50%',background:m[c]||m.gray,flexShrink:0}; },
+  detailRow:    { display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:'1px solid #f8fafc', fontSize:13 },
+  detailKey:    { color:'#64748b' },
+  detailVal:    { fontWeight:500, maxWidth:220, textAlign:'right', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' },
+  alertCard:    (s) => { const m={critical:'#ef4444',medium:'#eab308',low:'#3b82f6'}; return {background:'#fff',borderRadius:12,padding:16,borderLeft:`4px solid ${m[s]||'#94a3b8'}`,boxShadow:'0 1px 4px rgba(0,0,0,0.06)',marginBottom:12}; },
+  ackBtn:       { fontSize:12, border:'1px solid #e2e8f0', borderRadius:8, padding:'4px 12px', cursor:'pointer', background:'#fff', fontWeight:500 },
+  empty:        { textAlign:'center', padding:'48px 0', color:'#94a3b8' },
+  sectionTitle: { fontSize:13, fontWeight:600, color:'#64748b', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:12, margin:'0 0 12px 0' },
+  readyBanner:  { background:'#dcfce7', border:'1px solid #86efac', borderRadius:12, padding:'12px 16px', color:'#166534', fontSize:13, fontWeight:600, marginTop:8 },
+  footer:       { textAlign:'center', padding:'24px', fontSize:12, color:'#94a3b8' },
+  btnRefresh:   { background:'none', border:'1px solid #e2e8f0', borderRadius:8, padding:'6px 12px', cursor:'pointer', fontSize:12, color:'#64748b', fontWeight:500 },
+  btnExport:    (loading) => ({ background: loading ? '#94a3b8' : '#2563eb', color:'#fff', border:'none', borderRadius:8, padding:'7px 16px', fontSize:13, fontWeight:600, cursor: loading ? 'not-allowed' : 'pointer' }),
+  noModel:      { textAlign:'center', padding:32, color:'#94a3b8', fontSize:13 }
 };
 
 function StatCard({ label, value, unit, color, fault, icon }) {
@@ -62,7 +59,7 @@ function StatCard({ label, value, unit, color, fault, icon }) {
     <div style={S.card(fault)}>
       <div style={S.cardLabel}>
         <span>{label}</span>
-        <span style={{ color: colors[color], fontSize:18 }}>{icon}</span>
+        <span style={{ color:colors[color], fontSize:18 }}>{icon}</span>
       </div>
       <div>
         <span style={S.cardValue}>{value ?? '—'}</span>
@@ -99,7 +96,9 @@ export default function App() {
   const [esp32Active, setEsp32Active]   = useState(false);
   const [lastUpdated, setLastUpdated]   = useState(null);
   const [tab, setTab]                   = useState('overview');
+  const [exporting, setExporting]       = useState(false);
 
+  // ── Real-time readings ──
   useEffect(() => {
     const q = query(collection(db,'readings'), orderBy('created_at','desc'), limit(CHART_WINDOW));
     const unsub = onSnapshot(q, snap => {
@@ -117,6 +116,7 @@ export default function App() {
     return unsub;
   }, []);
 
+  // ── Total count ──
   useEffect(() => {
     async function getCount() {
       const snap = await getCountFromServer(collection(db,'readings'));
@@ -127,10 +127,20 @@ export default function App() {
     return () => clearInterval(iv);
   }, []);
 
+  // ── Health + alerts ──
   const refreshExternal = useCallback(async () => {
-    const [health, alertData] = await Promise.all([fetchHealth(), fetchAlerts()]);
-    setRenderStatus(health);
-    setAlerts(alertData?.alerts || []);
+    try {
+      const [hRes, aRes] = await Promise.all([
+        fetch(`${BASE_URL}/health`),
+        fetch(`${BASE_URL}/api/alerts`, { headers:{ 'x-api-key': API_KEY } })
+      ]);
+      const health = await hRes.json();
+      const alertData = await aRes.json();
+      setRenderStatus(health);
+      setAlerts(alertData?.alerts || []);
+    } catch {
+      setRenderStatus(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -139,6 +149,7 @@ export default function App() {
     return () => clearInterval(iv);
   }, [refreshExternal]);
 
+  // ── Active model ──
   useEffect(() => {
     const q = query(collection(db,'models'), orderBy('trained_at','desc'), limit(1));
     const unsub = onSnapshot(q, snap => {
@@ -148,6 +159,7 @@ export default function App() {
     return unsub;
   }, []);
 
+  // ── ESP32 active check ──
   useEffect(() => {
     if (!latest) return;
     const iv = setInterval(() => {
@@ -156,6 +168,42 @@ export default function App() {
     }, 3000);
     return () => clearInterval(iv);
   }, [latest]);
+
+  // ── Export CSV ──
+  const exportCSV = async () => {
+    setExporting(true);
+    try {
+      const res = await fetch(`${BASE_URL}/api/export/csv`, {
+        headers: { 'x-api-key': API_KEY }
+      });
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `transformer_readings_${new Date().toISOString().slice(0,10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('Export failed: ' + err.message);
+    }
+    setExporting(false);
+  };
+
+  // ── Acknowledge alert ──
+  const handleAck = async (id) => {
+    try {
+      await fetch(`${BASE_URL}/api/alerts/${id}/ack`, {
+        method: 'PATCH',
+        headers: { 'x-api-key': API_KEY }
+      });
+      setAlerts(prev => prev.filter(a => a.id !== id));
+    } catch (err) {
+      alert('Acknowledge failed: ' + err.message);
+    }
+  };
 
   const chartData = readings.map(r => ({
     time:      r.timestamp ? format(new Date(r.timestamp), 'HH:mm:ss') : '',
@@ -166,12 +214,6 @@ export default function App() {
   }));
 
   const progress = totalCount ? Math.min((totalCount / 50000) * 100, 100) : 0;
-
-  const handleAck = async (id) => {
-    await acknowledgeAlert(id);
-    setAlerts(prev => prev.filter(a => a.id !== id));
-  };
-
   const TABS = ['overview','charts','alerts','system'];
 
   return (
@@ -194,10 +236,13 @@ export default function App() {
           )}
           {alerts.length > 0 && (
             <span style={{ background:'#ef4444', color:'#fff', borderRadius:20, padding:'2px 10px', fontSize:12, fontWeight:600 }}>
-              🔔 {alerts.length} alert{alerts.length > 1 ? 's' : ''}
+              🔔 {alerts.length}
             </span>
           )}
-          <button style={S.refreshBtn} onClick={refreshExternal}>↻ Refresh</button>
+          <button style={S.btnExport(exporting)} onClick={exportCSV} disabled={exporting}>
+            {exporting ? '⏳ Exporting...' : '⬇ Export CSV'}
+          </button>
+          <button style={S.btnRefresh} onClick={refreshExternal}>↻ Refresh</button>
         </div>
       </header>
 
@@ -206,7 +251,7 @@ export default function App() {
         {TABS.map(t => (
           <button key={t} style={S.tab(tab===t)} onClick={() => setTab(t)}>
             {t.charAt(0).toUpperCase() + t.slice(1)}
-            {t === 'alerts' && alerts.length > 0 && (
+            {t==='alerts' && alerts.length > 0 && (
               <span style={{ marginLeft:6, background:'#ef4444', color:'#fff', borderRadius:20, padding:'1px 7px', fontSize:11 }}>
                 {alerts.length}
               </span>
@@ -217,15 +262,16 @@ export default function App() {
 
       <main style={S.main}>
 
-        {/* ── OVERVIEW ── */}
+        {/* ══ OVERVIEW ══ */}
         {tab === 'overview' && <>
+
           <div>
             <p style={S.sectionTitle}>Live Sensor Readings</p>
-            <div style={S.row}>
-              <StatCard label="Winding Temp" value={latest?.winding_temp?.toFixed(1)} unit="°C" color="orange" icon="🌡" fault={latest?.temp_fault} />
-              <StatCard label="Current"      value={latest?.current?.toFixed(3)}      unit="A"  color="blue"   icon="⚡" />
-              <StatCard label="Vibration"    value={latest?.vibration?.toFixed(4)}    unit="m/s²" color="purple" icon="📳" />
-              <StatCard label="Oil Level"    value={latest?.oil_level?.toFixed(1)}    unit="%" color="teal"   icon="🛢" />
+            <div style={S.row4}>
+              <StatCard label="Winding Temp" value={latest?.winding_temp?.toFixed(1)} unit="°C"    color="orange" icon="🌡" fault={latest?.temp_fault} />
+              <StatCard label="Current"      value={latest?.current?.toFixed(3)}      unit="A"     color="blue"   icon="⚡" />
+              <StatCard label="Vibration"    value={latest?.vibration?.toFixed(4)}    unit="m/s²"  color="purple" icon="📳" />
+              <StatCard label="Oil Level"    value={latest?.oil_level?.toFixed(1)}    unit="%"     color="teal"   icon="🛢" />
             </div>
           </div>
 
@@ -233,7 +279,7 @@ export default function App() {
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
               <div>
                 <p style={{ margin:0, fontWeight:600, fontSize:14 }}>Data Collection Progress</p>
-                <p style={{ margin:'2px 0 0', fontSize:12, color:'#94a3b8' }}>Target: 50,000 readings for Phase 1 training</p>
+                <p style={{ margin:'2px 0 0', fontSize:12, color:'#94a3b8' }}>Target: 50,000 readings for full Phase 1 training</p>
               </div>
               <div style={{ textAlign:'right' }}>
                 <p style={{ margin:0, fontSize:28, fontWeight:700, color:'#2563eb' }}>{totalCount?.toLocaleString() ?? '—'}</p>
@@ -249,7 +295,7 @@ export default function App() {
               <span>50,000</span>
             </div>
             {totalCount >= 50000 && (
-              <div style={S.readyBanner}>✅ Ready for Phase 1 unsupervised training</div>
+              <div style={S.readyBanner}>✅ Ready for full Phase 1 unsupervised training</div>
             )}
           </div>
 
@@ -265,9 +311,10 @@ export default function App() {
               </LineChart>
             </ResponsiveContainer>
           </div>
+
         </>}
 
-        {/* ── CHARTS ── */}
+        {/* ══ CHARTS ══ */}
         {tab === 'charts' && (
           <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
             {[
@@ -292,12 +339,12 @@ export default function App() {
           </div>
         )}
 
-        {/* ── ALERTS ── */}
+        {/* ══ ALERTS ══ */}
         {tab === 'alerts' && (
           <div>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
               <p style={S.sectionTitle}>Active Alerts ({alerts.length})</p>
-              <button style={S.refreshBtn} onClick={refreshExternal}>↻ Refresh</button>
+              <button style={S.btnRefresh} onClick={refreshExternal}>↻ Refresh</button>
             </div>
             {alerts.length === 0 ? (
               <div style={S.empty}>
@@ -315,84 +362,4 @@ export default function App() {
                     </p>
                     <p style={{ margin:'2px 0 0', fontSize:11, color:'#94a3b8' }}>
                       {a.timestamp?.toDate ? formatDistanceToNow(a.timestamp.toDate(), { addSuffix:true }) : '—'}
-                    </p>
-                  </div>
-                  <button style={S.ackBtn} onClick={() => handleAck(a.id)}>Acknowledge</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ── SYSTEM ── */}
-        {tab === 'system' && (
-          <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
-
-            <div style={S.card(false)}>
-              <p style={S.sectionTitle}>System Status</p>
-              <StatusRow label="Firebase Connection" status={fbConnected ? 'Connected' : 'Disconnected'} color={fbConnected ? 'green' : 'red'} />
-              <StatusRow label="Render Backend"      status={renderStatus ? 'Online' : 'Offline'} detail={renderStatus ? `Uptime ${Math.floor(renderStatus.uptime)}s` : ''} color={renderStatus ? 'green' : 'red'} />
-              <StatusRow label="ESP32 Device"        status={esp32Active ? 'Transmitting' : 'Idle / Offline'} detail={latest?.seq != null ? `Seq #${latest.seq}` : ''} color={esp32Active ? 'green' : 'yellow'} />
-              <StatusRow label="Data Collection"     status={totalCount >= 50000 ? 'Ready to Train' : 'Collecting'} detail={`${totalCount?.toLocaleString() ?? '—'} readings`} color={totalCount >= 50000 ? 'green' : 'blue'} />
-              <StatusRow label="ML Model"            status={activeModel ? `v${activeModel.version} Active` : 'Not trained yet'} detail={activeModel ? `F1: ${activeModel.rf_f1?.toFixed(3)}` : 'Waiting for data'} color={activeModel ? 'green' : 'gray'} />
-            </div>
-
-            {latest && (
-              <div style={S.card(false)}>
-                <p style={S.sectionTitle}>Last Reading Detail</p>
-                {[
-                  ['Document ID',    latest.id],
-                  ['Timestamp',      latest.timestamp],
-                  ['Sequence #',     latest.seq ?? 'N/A'],
-                  ['Uptime (ms)',    latest.uptime_ms?.toLocaleString() ?? 'N/A'],
-                  ['Temp Fault',     latest.temp_fault ? '⚠ YES' : 'No'],
-                  ['Label',          latest.label ?? 'Unlabeled'],
-                  ['Anomaly Score',  latest.anomaly_score ?? 'Not scored yet'],
-                  ['Predicted',      latest.predicted_label ?? 'Not predicted yet'],
-                  ['Confidence',     latest.confidence ? `${(latest.confidence*100).toFixed(1)}%` : '—'],
-                  ['Severity',       latest.severity ?? '—'],
-                ].map(([k,v]) => (
-                  <div key={k} style={S.detailRow}>
-                    <span style={S.detailKey}>{k}</span>
-                    <span style={S.detailVal}>{String(v)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div style={S.card(false)}>
-              <p style={S.sectionTitle}>ML Model Status</p>
-              {activeModel ? (
-                [
-                  ['Version',        activeModel.version],
-                  ['Type',           activeModel.type],
-                  ['RF F1 Score',    activeModel.rf_f1?.toFixed(4)],
-                  ['GB F1 Score',    activeModel.gb_f1?.toFixed(4)],
-                  ['Trained On',     `${activeModel.n_samples?.toLocaleString()} samples`],
-                  ['Retrain Reason', activeModel.reason],
-                ].map(([k,v]) => (
-                  <div key={k} style={S.detailRow}>
-                    <span style={S.detailKey}>{k}</span>
-                    <span style={S.detailVal}>{String(v ?? '—')}</span>
-                  </div>
-                ))
-              ) : (
-                <div style={S.noModel}>
-                  <div style={{ fontSize:36, marginBottom:8 }}>🧠</div>
-                  <p style={{ margin:0, fontWeight:600 }}>No model trained yet</p>
-                  <p style={{ margin:'4px 0 0', fontSize:12 }}>Available after Phase 1 at 50,000 readings</p>
-                </div>
-              )}
-            </div>
-
-          </div>
-        )}
-
-      </main>
-
-      <footer style={S.footer}>
-        Transformer PM v1.0 — {lastUpdated && `Last sync ${format(lastUpdated, 'HH:mm:ss')}`}
-      </footer>
-    </div>
-  );
-}
+                    </p
