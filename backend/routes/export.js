@@ -15,26 +15,45 @@ router.get('/csv', auth, async (req, res) => {
     if (labeled_only === 'true') query = query.where('label', '!=', null);
 
     const snap = await query.get();
-    const rows = ['id,winding_temp,current,vibration,oil_level,temp_fault,timestamp,seq,label,anomaly_score,cluster'];
+
+    const header = [
+      'id', 'winding_temp', 'oil_temp', 'temp_delta',
+      'current', 'vibration', 'oil_level',
+      'voltage', 'real_power', 'apparent_power',
+      'reactive_power', 'power_factor',
+      'temp_fault', 'oil_temp_fault', 'voltage_fault',
+      'timestamp', 'seq', 'label', 'anomaly_score', 'severity'
+    ].join(',');
+
+    const rows = [header];
 
     snap.forEach(doc => {
       const d = doc.data();
       rows.push([
         doc.id,
-        d.winding_temp,
-        d.current,
-        d.vibration,
-        d.oil_level,
-        d.temp_fault ? 1 : 0,
-        d.timestamp,
-        d.seq          ?? '',
-        d.label        ?? '',
-        d.anomaly_score ?? '',
-        d.cluster      ?? ''
+        d.winding_temp   ?? '',
+        d.oil_temp       ?? '',
+        d.temp_delta     ?? '',
+        d.current        ?? '',
+        d.vibration      ?? '',
+        d.oil_level      ?? '',
+        d.voltage        ?? '',
+        d.real_power     ?? '',
+        d.apparent_power ?? '',
+        d.reactive_power ?? '',
+        d.power_factor   ?? '',
+        d.temp_fault     ? 1 : 0,
+        d.oil_temp_fault ? 1 : 0,
+        d.voltage_fault  ? 1 : 0,
+        d.timestamp      ?? '',
+        d.seq            ?? '',
+        d.label          ?? '',
+        d.anomaly_score  ?? '',
+        d.severity       ?? ''
       ].join(','));
     });
 
-    console.log(`[EXPORT] Exported ${snap.size} readings`);
+    console.log(`[EXPORT] ${snap.size} readings`);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename=readings.csv');
     res.send(rows.join('\n'));
